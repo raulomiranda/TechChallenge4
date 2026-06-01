@@ -4,220 +4,223 @@ import joblib
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from utils import GroupObesityClasses, DropFeatures, OneHotEncodingNames, OrdinalFeature, MinMax, Oversample
 
-# Configuração da página
-st.set_page_config(page_title="Analisador de Obesidade", layout="wide")
+# ==========================================
+# 1. Configuração da Página e UI
+# ==========================================
+st.set_page_config(
+    page_title="HealthPredict - Triagem de Obesidade",
+    page_icon="🩺",
+    layout="wide"
+)
 
-# Título Principal
-st.markdown("<h1 style='text-align: center;'> 🩺 Plataforma de Análise de Obesidade </h1>", unsafe_allow_html=True)
-st.markdown("---")
+# ==========================================
+# 2. Carregamento dos Modelos (Em Cache)
+# ==========================================
+@st.cache_resource
+def load_models():
+    try:
+        # Substitua pelos nomes reais dos arquivos gerados no seu notebook
+        modelo_bio = joblib.load('modelos/modelo_biometrico.pkl')
+        modelo_comp = joblib.load('modelos/modelo_comportamental.pkl')
+        encoders = joblib.load('modelos/label_encoders_rf.pkl')
+        return modelo_bio, modelo_comp, encoders
+    except FileNotFoundError:
+        return None, None, None
 
-# --- Mapeamentos ---
-mapa_genero = {"Feminino": "F", "Masculino": "M"}
-mapa_sim_nao = {"Sim": "yes", "Não": "no"}
-mapa_caec = {"Não": "no", "Às vezes": "Sometimes", "Frequentemente": "Frequently", "Sempre": "Always"}
-mapa_calc = {"Não bebe": "no", "Às vezes": "Sometimes", "Frequentemente": "Frequently", "Sempre": "Always"}
-mapa_transporte = {
-    "Automóvel": "Automobile", "Motocicleta": "Motorbike", "Bicicleta": "Bike",
-    "Transporte Público": "Public_Transportation", "A pé": "Walking"
-}
-mapa_fcvc = {"Raramente": 1, "Às vezes": 2, "Sempre": 3}
-mapa_ncp = {"Uma": 1, "Duas": 2, "Três": 3, "Quatro ou mais": 4}
-mapa_ch2o = {"< 1 L/dia": 1, "1–2 L/dia": 2, "> 2 L/dia": 3}
-mapa_faf = {"Nenhuma": 0, "1–2 x/semana": 1, "3–4 x/semana": 2, "5+ x/semana": 3}
-mapa_tue = {"0–2 h/dia": 0, "3–5 h/dia": 1, "> 5 h/dia": 2}
+modelo_bio, modelo_comp, encoders = load_models()
 
-# --- Abas do Aplicativo ---
-tab_pred, tab_dash = st.tabs(["🔍 Realizar Predição", "📊 Dashboard de Dados"])
+@st.cache_data
+def load_data():
+    df = pd.read_csv('dados/Obesity.csv')
+    df = df.rename(columns={
+        "Gender": "Genero", 
+        "Age": "Idade", 
+        "Height": "Altura", 
+        "Weight": "Peso", 
+        "family_history": "Historico_familiar_sobrepeso", 
+        "FAVC": "Consumo_alimentos_hipercaloricos", 
+        "FCVC": "Frequencia_consumo_vegetais", 
+        "NCP": "Numero_refeicoes_diarias", 
+        "CAEC": "Consumo_entre_refeicoes", 
+        "SMOKE": "Fumante", 
+        "CH2O": "Consumo_agua_diario", 
+        "SCC": "Monitora_ingestao_calorica", 
+        "FAF": "Frequencia_semanal_atividade_fisica", 
+        "TUE": "Tempo_diario_dispositivos_eletronicos", 
+        "CALC": "Consumo_alcoolico", 
+        "MTRANS": "Meio_transporte_principal",
+        "Obesity": "Classe_peso_corporal"
+    })
+    colunas_escala = ["Frequencia_consumo_vegetais", "Numero_refeicoes_diarias", "Consumo_agua_diario", "Frequencia_semanal_atividade_fisica", "Tempo_diario_dispositivos_eletronicos"]
+    for col in colunas_escala:
+        df[col] = df[col].round().astype(int)
+    return df
 
-# --- TAB 1: PREDIÇÃO ---
-with tab_pred:
-    with st.sidebar:
-        st.header("Dados Biométricos")
-        input_genero_pt = st.radio("Sexo Biológico", list(mapa_genero.keys()), index=0) 
-        input_idade = st.slider("Idade em anos", 14, 61, 22)
-        input_altura = st.slider("Altura em metros", 1.40, 2.10, 1.65, step=0.01)
-        input_peso = st.number_input("Peso em kg", 30.0, 200.0, 70.0, step=0.1)
-        
-        st.divider()
-        st.info("Ajuste os dados e clique em Analisar Perfil.")
+# ==========================================
+# 3. Estrutura do App (Tabs)
+# ==========================================
+st.title("🩺 HealthPredict: Assistente de Diagnóstico e Triagem")
+st.markdown("Sistema de apoio à decisão médica focado na predição de níveis de obesidade através de marcadores biométricos, comportamentais e genéticos.")
 
+tab1, tab2 = st.tabs(["📊 Triagem de Pacientes (Predição)", "📈 Painel Analítico (Insights)"])
+
+# ------------------------------------------
+# TAB 1: PREDIÇÃO E FORMULÁRIO
+# ------------------------------------------
+with tab1:
+    st.header("Simulação de Triagem")
+    
+    # Seleção da Estratégia de Modelagem
+    estrategia = st.radio(
+        "Selecione a abordagem preditiva:",
+        ["Abordagem Comportamental (Sem Peso/Altura)", "Abordagem Biométrica (Com Peso/Altura)"],
+        help="A abordagem comportamental prevê o risco baseado apenas em hábitos e genética."
+    )
+    
+    st.markdown("---")
+    
     col1, col2 = st.columns(2)
-
+    
+    # Coleta de Dados do Paciente
     with col1:
-        st.subheader("🧬 Histórico e Hábitos")
-        input_historico_familiar_pt = st.radio("Histórico familiar de excesso de peso?", list(mapa_sim_nao.keys()), index=0, horizontal=True)
-        input_favc_pt = st.radio("Consumo frequente de alimentos muito calóricos?", list(mapa_sim_nao.keys()), index=0, horizontal=True)
+        st.subheader("Perfil e Genética")
+        idade = st.number_input("Idade", min_value=14, max_value=100, value=25)
+        hist_familiar = st.selectbox("Histórico Familiar de Excesso de Peso?", ["Não", "Sim"])
         
-        input_fcvc_pt = st.select_slider("Frequência de consumo de vegetais", options=list(mapa_fcvc.keys()), value="Raramente")
-        input_ncp_pt = st.select_slider("Número de refeições principais por dia", options=list(mapa_ncp.keys()), value="Três")
-        input_caec_pt = st.select_slider("Consumo de lanches entre as refeições", options=list(mapa_caec.keys()), value="Sempre")
-        input_ch2o_pt = st.select_slider("Consumo diário de água", options=list(mapa_ch2o.keys()), value="< 1 L/dia")
-
+        if "Biométrica" in estrategia:
+            peso = st.number_input("Peso (kg)", min_value=30.0, max_value=250.0, value=70.0)
+            altura = st.number_input("Altura (m)", min_value=1.20, max_value=2.20, value=1.70)
+            
     with col2:
-        st.subheader("🏃 Estilo de Vida e Rotina")
-        input_smoke_pt = st.radio("Hábito de fumar?", list(mapa_sim_nao.keys()), index=1, horizontal=True)
-        input_scc_pt = st.radio("Monitora a ingestão calórica diária?", list(mapa_sim_nao.keys()), index=1, horizontal=True)
-        
-        input_faf_pt = st.select_slider("Frequência semanal de atividade física", options=list(mapa_faf.keys()), value="Nenhuma")
-        input_tue_pt = st.select_slider("Tempo diário usando dispositivos eletrônicos", options=list(mapa_tue.keys()), value="> 5 h/dia")
-        
-        input_calc_pt = st.select_slider("Consumo de bebida alcoólica", options=list(mapa_calc.keys()), value="Às vezes")
-        input_meio_transporte_pt = st.selectbox("Meio de transporte habitual", list(mapa_transporte.keys()), index=3)
+        st.subheader("Hábitos e Estilo de Vida")
+        favc = st.selectbox("Consome alimentos hipercalóricos com frequência?", ["Não", "Sim"])
+        fcvc = st.slider("Frequência de consumo de vegetais (1=Raramente, 3=Sempre)", 1, 3, 2)
+        ncp = st.slider("Número de refeições principais por dia", 1, 4, 3)
+        faf = st.slider("Dias na semana com atividade física (0=Nenhum, 3=Alto)", 0, 3, 1)
 
-    st.divider()
-
-    if st.button('🚀 ANALISAR PERFIL', use_container_width=True):
-        try:
-            try:
-                data_saved = joblib.load('modelo_biometria_completo.joblib')
-            except:
-                data_saved = joblib.load('modelo_obesidade_com_altura.joblib')
+    # Processamento e Predição
+    if st.button("Realizar Diagnóstico", type="primary"):
+        if modelo_bio is None or modelo_comp is None:
+            st.error("Erro: Arquivos .pkl dos modelos não encontrados. Certifique-se de exportá-los do Notebook.")
+        else:
+            with st.spinner('Processando os dados...'):
+                # 1. Transformação dos inputs em formato numérico
+                map_sim_nao = {"Não": 0, "Sim": 1}
                 
-            preprocessor = data_saved['preprocessor']
-            model = data_saved['model']
-            feature_names = data_saved['features']
-            target_names = data_saved.get('target_names', [])
-            
-            novo_input = pd.DataFrame([{
-                "Genero": mapa_genero[input_genero_pt], "Idade": float(input_idade), "Altura": float(input_altura), "Peso": float(input_peso),
-                "Historico_familiar_sobrepeso": mapa_sim_nao[input_historico_familiar_pt], "Consumo_alimentos_hipercaloricos": mapa_sim_nao[input_favc_pt],
-                "Frequencia_consumo_vegetais": float(mapa_fcvc[input_fcvc_pt]), "Numero_refeicoes_diarias": float(mapa_ncp[input_ncp_pt]),
-                "Consumo_entre_refeicoes": mapa_caec[input_caec_pt], "Fumante": mapa_sim_nao[input_smoke_pt],
-                "Consumo_agua_diario": float(mapa_ch2o[input_ch2o_pt]), "Monitora_ingestao_calorica": mapa_sim_nao[input_scc_pt],
-                "Frequencia_semanal_atividade_fisica": float(mapa_faf[input_faf_pt]), "Tempo_diario_dispositivos_eletronicos": float(mapa_tue[input_tue_pt]),
-                "Consumo_alcoolico": mapa_calc[input_calc_pt], "Meio_transporte_principal": mapa_transporte[input_meio_transporte_pt],
-                "Classe_peso_corporal": "Normal_Weight"
-            }])
+                dados_entrada = {
+                    'Historico_familiar_sobrepeso': map_sim_nao[hist_familiar],
+                    'Consumo_alimentos_hipercaloricos': map_sim_nao[favc],
+                    'Frequencia_semanal_atividade_fisica': faf,
+                    'Idade': idade,
+                    'Frequencia_consumo_vegetais': fcvc,
+                    'Numero_refeicoes_diarias': ncp
+                }
+                
+                # 2. Execução baseada na estratégia escolhida
+                if "Biométrica" in estrategia:
+                    imc = peso / (altura ** 2)
+                    dados_entrada['IMC'] = imc
+                    df_pred = pd.DataFrame([dados_entrada])
+                    predicao_idx = modelo_bio.predict(df_pred)[0]
+                    st.info(f"💡 IMC Calculado internamente: {imc:.2f}")
+                else:
+                    df_pred = pd.DataFrame([dados_entrada])
+                    predicao_idx = modelo_comp.predict(df_pred)[0]
+                
+                # Decodificar predicao
+                predicao = encoders['Classe_peso_corporal'].inverse_transform([predicao_idx])[0]
+                
+                # 3. Exibição do Resultado
+                st.success(f"**Classe Prevista pelo Modelo:** {predicao}")
+                
+                if "Obesity" in predicao:
+                    st.warning("⚠️ O paciente foi classificado em uma faixa de obesidade. Recomenda-se encaminhamento para nutricionista e avaliação cardiológica.")
+                elif "Overweight" in predicao:
+                    st.info("ℹ️ O paciente apresenta sobrepeso. Intervenções iniciais nos hábitos alimentares são recomendadas.")
 
-            input_processed = preprocessor.transform(novo_input)
-            X_input = input_processed.drop('Classe_peso_corporal', axis=1, errors='ignore')
-            for col in feature_names:
-                if col not in X_input.columns: X_input[col] = 0.0
-            X_input = X_input[feature_names]
-            
-            raw_pred = model.predict(X_input)[0]
-            probs = model.predict_proba(X_input)[0]
-            predicao_texto = target_names[raw_pred] if isinstance(raw_pred, (int, np.integer)) and target_names else str(raw_pred)
-            
-            cor = "#FF4B4B" if "Obeso" in predicao_texto else "#4CAF50"
-            st.markdown(f"<div style='text-align: center; padding: 20px; border-radius: 10px; background-color: {cor}22; border: 2px solid {cor};'><h2 style='color: {cor}; margin: 0;'>Resultado Estimado: {predicao_texto}</h2></div>", unsafe_allow_html=True)
+# ------------------------------------------
+# TAB 2: PAINEL ANALÍTICO
+# ------------------------------------------
+with tab2:
+    st.header("Insights para a Equipe Médica")
+    st.markdown("""
+    Esta seção apresenta os principais achados da nossa análise de dados base, 
+    ajudando a equipe a entender quais fatores (Features de Ouro) mais influenciam o ganho de peso.
+    """)
+    
+    df_dados = load_data()
+    df_plot_dados = df_dados.copy()
+    
+    # Dicionário de tradução dos labels
+    map_classes = {
+        'Insufficient_Weight': 'Abaixo do Peso', 
+        'Normal_Weight': 'Peso Normal', 
+        'Overweight_Level_I': 'Sobrepeso I', 
+        'Overweight_Level_II': 'Sobrepeso II', 
+        'Obesity_Type_I': 'Obesidade I', 
+        'Obesity_Type_II': 'Obesidade II', 
+        'Obesity_Type_III': 'Obesidade III'
+    }
+    df_plot_dados['Classe_peso_corporal'] = df_plot_dados['Classe_peso_corporal'].map(map_classes)
+    ordem_classes = list(map_classes.values())
+    
+    map_hist = {'yes': 'Há histórico', 'no': 'Não há'}
+    df_plot_dados['Historico_familiar_sobrepeso'] = df_plot_dados['Historico_familiar_sobrepeso'].map(map_hist)
+    
+    map_cons = {'yes': 'Sim', 'no': 'Não'}
+    df_plot_dados['Consumo_alimentos_hipercaloricos'] = df_plot_dados['Consumo_alimentos_hipercaloricos'].map(map_cons)
+    
+    map_ativ = {0: 'Nenhuma', 1: '1-2x/sem', 2: '3-4x/sem', 3: '5x/sem ou mais'}
+    df_plot_dados['Frequencia_semanal_atividade_fisica'] = df_plot_dados['Frequencia_semanal_atividade_fisica'].map(map_ativ)
+    
+    col_dash1, col_dash2 = st.columns(2)
+    
+    with col_dash1:
+        st.subheader("1. Histórico Familiar vs Obesidade")
+        fig1, ax1 = plt.subplots(figsize=(8, 5))
+        df_cont1 = pd.crosstab(df_plot_dados['Classe_peso_corporal'], df_plot_dados['Historico_familiar_sobrepeso'])
+        df_perc1 = df_cont1.div(df_cont1.sum(axis=1), axis=0) * 100
+        df_plot1 = df_perc1.reset_index().melt(id_vars='Classe_peso_corporal')
+        sns.barplot(data=df_plot1, x='Classe_peso_corporal', y='value', hue='Historico_familiar_sobrepeso', order=ordem_classes, palette='viridis', ax=ax1)
+        ax1.set_xticklabels(ax1.get_xticklabels(), rotation=45, ha='right')
+        ax1.set_ylabel('Porcentagem (%)')
+        ax1.set_xlabel('Classe de Peso')
+        plt.tight_layout()
+        st.pyplot(fig1)
 
-            st.divider()
-            st.subheader("🌱 Recomendações e Inteligência")
-            c_rec1, c_rec2 = st.columns(2)
-            with c_rec1:
-                st.write("### 🚩 Plano de Ação")
-                if mapa_faf[input_faf_pt] < 2: st.warning("**Exercício**: Aumentar a atividade física é essencial.")
-                if mapa_ch2o[input_ch2o_pt] < 3: st.info("**Água**: Tente beber mais de 2L de água diariamente.")
-                if mapa_caec[input_caec_pt] in ['Always', 'Frequently']: st.error("**Lanches**: Evite beliscar constantemente entre as refeições.")
-            with c_rec2:
-                st.write("### 📊 Confiança do Modelo")
-                prob_df = pd.DataFrame({'Classe': target_names if target_names else model.classes_, 'Probabilidade': probs})
-                prob_df = prob_df.sort_values(by='Probabilidade', ascending=False)
-                fig, ax = plt.subplots(figsize=(6, 4))
-                sns.barplot(x='Probabilidade', y='Classe', data=prob_df, palette='magma', ax=ax)
-                st.pyplot(fig)
-        except Exception as e:
-            st.error(f"Erro ao processar: {e}")
-
-# --- TAB 2: DASHBOARD ---
-with tab_dash:
-    st.subheader("📊 Visão Geral do Dataset de Obesidade")
+        st.subheader("2. Idade por Classe de Peso")
+        fig2, ax2 = plt.subplots(figsize=(8, 5))
+        sns.boxplot(data=df_plot_dados, x='Classe_peso_corporal', y='Idade', order=ordem_classes, palette='magma', ax=ax2)
+        ax2.set_xticklabels(ax2.get_xticklabels(), rotation=45, ha='right')
+        ax2.set_xlabel('Classe de Peso')
+        plt.tight_layout()
+        st.pyplot(fig2)
+        
+    with col_dash2:
+        st.subheader("3. Consumo Hipercalórico vs Obesidade")
+        fig3, ax3 = plt.subplots(figsize=(8, 5))
+        df_cont3 = pd.crosstab(df_plot_dados['Classe_peso_corporal'], df_plot_dados['Consumo_alimentos_hipercaloricos'])
+        df_perc3 = df_cont3.div(df_cont3.sum(axis=1), axis=0) * 100
+        df_plot3 = df_perc3.reset_index().melt(id_vars='Classe_peso_corporal')
+        sns.barplot(data=df_plot3, x='Classe_peso_corporal', y='value', hue='Consumo_alimentos_hipercaloricos', order=ordem_classes, palette='viridis', ax=ax3)
+        ax3.set_xticklabels(ax3.get_xticklabels(), rotation=45, ha='right')
+        ax3.set_ylabel('Porcentagem (%)')
+        ax3.set_xlabel('Classe de Peso')
+        plt.tight_layout()
+        st.pyplot(fig3)
+        
+        st.subheader("4. Atividade Física vs Obesidade")
+        fig4, ax4 = plt.subplots(figsize=(8, 5))
+        df_cont4 = pd.crosstab(df_plot_dados['Classe_peso_corporal'], df_plot_dados['Frequencia_semanal_atividade_fisica'])
+        df_perc4 = df_cont4.div(df_cont4.sum(axis=1), axis=0) * 100
+        df_plot4 = df_perc4.reset_index().melt(id_vars='Classe_peso_corporal')
+        sns.barplot(data=df_plot4, x='Classe_peso_corporal', y='value', hue='Frequencia_semanal_atividade_fisica', order=ordem_classes, palette='viridis', ax=ax4)
+        ax4.set_xticklabels(ax4.get_xticklabels(), rotation=45, ha='right')
+        ax4.set_ylabel('Porcentagem (%)')
+        ax4.set_xlabel('Classe de Peso')
+        plt.tight_layout()
+        st.pyplot(fig4)
     
-    @st.cache_data
-    def load_clean_data():
-        df = pd.read_csv("dados/Obesity.csv")
-        df = df.rename(columns={
-            "Gender": "Gênero", "Age": "Idade", "Height": "Altura", "Weight": "Peso", 
-            "family_history": "Histórico_Familiar", "FAVC": "Comida_Calórica", 
-            "FCVC": "Consumo_Vegetais", "NCP": "Refeições_Diárias", 
-            "CAEC": "Lanches_Intermediários", "SMOKE": "Fumante", 
-            "CH2O": "Consumo_Água", "SCC": "Monitora_Calorias", 
-            "FAF": "Atividade_Física", "TUE": "Uso_Eletrônicos", 
-            "CALC": "Consumo_Álcool", "MTRANS": "Transporte", "Obesity": "Classe_Peso"
-        })
-        df['Escala_Obesidade'] = df['Classe_Peso'].map({
-            'Insufficient_Weight': 0, 'Normal_Weight': 1, 'Overweight_Level_I': 2,
-            'Overweight_Level_II': 3, 'Obesity_Type_I': 4, 'Obesity_Type_II': 5, 'Obesity_Type_III': 6
-        })
-        return df
-
-    df_dash = load_clean_data()
-    
-    col_d1, col_d2 = st.columns(2)
-    
-    with col_d1:
-        st.write("### 📍 Dispersão: Peso vs Altura")
-        fig_scat, ax_scat = plt.subplots(figsize=(8, 5))
-        sns.scatterplot(data=df_dash, x='Peso', y='Altura', hue='Classe_Peso', palette='viridis', alpha=0.6, ax=ax_scat)
-        plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0., fontsize='small')
-        plt.xlabel("Peso (kg)")
-        plt.ylabel("Altura (m)")
-        st.pyplot(fig_scat)
-
-    with col_d2:
-        st.write("### 📈 Impacto Global na Progressão de Peso")
-        corr_data = df_dash.select_dtypes(include=[np.number]).corr()['Escala_Obesidade'].drop(['Escala_Obesidade', 'Peso', 'Altura']).sort_values(ascending=False)
-        fig_corr, ax_corr = plt.subplots(figsize=(8, 5))
-        sns.barplot(x=corr_data.values, y=corr_data.index, palette='RdBu_r', ax=ax_corr)
-        plt.xlabel("Força do Impacto (Correlação)")
-        plt.ylabel("Variáveis Comportamentais")
-        st.pyplot(fig_corr)
-
-    st.divider()
-    
-    # --- Distribuição por Feature ---
-    st.write("### 🔍 Distribuição de Hábitos por Classe de Peso")
-    
-    features_disponiveis = [
-        'Gênero', 'Histórico_Familiar', 'Comida_Calórica', 'Consumo_Vegetais', 
-        'Refeições_Diárias', 'Lanches_Intermediários', 'Fumante', 'Consumo_Água', 
-        'Monitora_Calorias', 'Atividade_Física', 'Uso_Eletrônicos', 'Consumo_Álcool', 'Transporte'
-    ]
-    
-    feature_selecionada = st.selectbox("Selecione um hábito para analisar:", features_disponiveis)
-    
-    df_cont = pd.crosstab(df_dash['Classe_Peso'], df_dash[feature_selecionada])
-    df_perc = df_cont.div(df_cont.sum(axis=1), axis=0) * 100
-    df_plot = df_perc.reset_index().melt(id_vars='Classe_Peso')
-    
-    ordem_classes = [
-        'Insufficient_Weight', 'Normal_Weight', 'Overweight_Level_I', 
-        'Overweight_Level_II', 'Obesity_Type_I', 'Obesity_Type_II', 'Obesity_Type_III'
-    ]
-    
-    fig_feat, ax_feat = plt.subplots(figsize=(12, 6))
-    sns.barplot(data=df_plot, x='Classe_Peso', y='value', hue=feature_selecionada, order=ordem_classes, palette='magma', ax=ax_feat)
-    
-    plt.title(f'Distribuição Percentual de {feature_selecionada.replace("_", " ")}', fontsize=14)
-    plt.ylabel('Porcentagem (%)', fontsize=12)
-    plt.xlabel('Classe de Peso Corporal', fontsize=12)
-    plt.xticks(rotation=45)
-    plt.legend(title=feature_selecionada.replace("_", " "), bbox_to_anchor=(1.05, 1), loc=2)
-    
-    for p in ax_feat.patches:
-        if p.get_height() > 0:
-            ax_feat.annotate(f'{p.get_height():.1f}%', 
-                        (p.get_x() + p.get_width() / 2., p.get_height()), 
-                        ha = 'center', va = 'center', 
-                        xytext = (0, 9), textcoords = 'offset points', fontsize=8)
-                        
-    st.pyplot(fig_feat)
-    
-    st.divider()
-    
-    st.write("### 📅 Estatísticas de Idade por Classe")
-    age_stats = df_dash.groupby('Classe_Peso')['Idade'].agg(['mean', 'median']).reset_index()
-    age_stats['Classe_Peso'] = pd.Categorical(age_stats['Classe_Peso'], categories=ordem_classes, ordered=True)
-    age_stats = age_stats.sort_values('Classe_Peso').melt(id_vars='Classe_Peso', var_name='Métrica', value_name='Anos')
-    
-    fig_age, ax_age = plt.subplots(figsize=(10, 5))
-    sns.barplot(data=age_stats, x='Classe_Peso', y='Anos', hue='Métrica', palette='coolwarm', ax=ax_age)
-    plt.xlabel("Classe de Peso Corporal")
-    plt.ylabel("Idade (Anos)")
-    plt.xticks(rotation=45)
-    st.pyplot(fig_age)
-    
-    st.info("O dashboard acima utiliza os dados brutos do dataset para contextualizar a predição individual.")
+    st.markdown("---")
+    st.write("**Nota Técnica:** O modelo preditivo atual omite intencionalmente variáveis enviesadas no dataset original (como Gênero e Hábitos de Fumo) para garantir uma predição médica imparcial e focada nos hábitos de vida.")
